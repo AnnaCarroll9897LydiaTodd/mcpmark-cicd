@@ -1,0 +1,171 @@
+name: PR Automation Workflow
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run ESLint
+        id: eslint
+        run: npm run lint
+        continue-on-error: true
+      - name: Run Prettier Check
+        id: prettier
+        run: npx prettier --check .
+        continue-on-error: true
+      - name: Post Code Quality Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eslintOutput = `${{ steps.eslint.outputs.stdout || steps.eslint.outputs.stderr || 'No output' }}`;
+            const prettierOutput = `${{ steps.prettier.outputs.stdout || steps.prettier.outputs.stderr || 'No output' }}`;
+            const comment = `## Code Quality Report\n\n### ESLint Results:\n\`\`\`\n${eslintOutput}\`\`\`\n\n### Prettier Results:\n\`\`\`\n${prettierOutput}\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Tests with Coverage
+        id: tests
+        run: npm test -- --coverage
+        continue-on-error: true
+      - name: Generate Coverage Summary
+        id: coverage-summary
+        run: |
+          COVERAGE_SUMMARY=$(npx nyc report --reporter=text-summary 2>/dev/null || echo "Coverage summary generation failed")
+          echo "coverage_summary=$COVERAGE_SUMMARY" >> $GITHUB_OUTPUT
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const testOutput = `${{ steps.tests.outputs.stdout || steps.tests.outputs.stderr || 'No output' }}`;
+            const coverageSummary = `${{ steps.coverage-summary.outputs.coverage_summary }}`;
+            const comment = `## Test Coverage Report\n\n### Test Results:\n\`\`\`\n${testOutput}\`\`\`\n\n### Coverage Summary:\n\`\`\`\n${coverageSummary}\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+      - name: Upload Coverage Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: warn
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Dependency Vulnerability Check
+        id: npm-audit
+        run: |
+          AUDIT_OUTPUT=$(npm audit --json 2>/dev/null | jq -r '.advisories | to_entries[] | "\(.value.module_name)@\(.value.version): \(.value.title) (Severity: \(.value.severity))"' || echo "No vulnerabilities found or audit failed")
+          echo "audit_output=$AUDIT_OUTPUT" >> $GITHUB_OUTPUT
+      - name: Scan for Secrets
+        id: secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: --path=. --report-format=json --report-path=gitleaks-report.json
+        continue-on-error: true
+      - name: Generate Security Report
+        id: security-report
+        run: |
+          SECRET_SCAN_OUTPUT=$(cat gitleaks-report.json 2>/dev/null | jq -r '.[] | "\(.rule): \(.message) at \(.file):\(.line)"' || echo "No secrets found or scan failed")
+          echo "security_report=## Security Scan Report\n\n### Dependencies Vulnerabilities:\n\`\`\`\n${{ steps.npm-audit.outputs.audit_output }}\`\`\`\n\n### Secrets Scan Results:\n\`\`\`\n${SECRET_SCAN_OUTPUT}\`\`\`" >> $GITHUB_OUTPUT
+      - name: Post Security Scan Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const securityReport = `${{ steps.security-report.outputs.security_report }}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: securityReport
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Application
+        id: build
+        run: npm run build
+        continue-on-error: true
+      - name: Validate Endpoints
+        id: endpoints
+        run: |
+          # Start application in background
+          npm start &
+          APP_PID=$!
+          # Wait for app to start
+          sleep 10
+          # Validate endpoints
+          ENDPOINT_OUTPUT=$(curl -f http://localhost:3000 2>&1 || echo "Root endpoint inaccessible")
+          # Add more endpoint checks as needed
+          echo "endpoint_output=$ENDPOINT_OUTPUT" >> $GITHUB_OUTPUT
+          # Stop the application
+          kill $APP_PID
+        continue-on-error: true
+      - name: Create Deployment Preview Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: dist/
+          if-no-files-found: warn
+      - name: Post Build Validation Status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildOutput = `${{ steps.build.outputs.stdout || steps.build.outputs.stderr || 'No output' }}`;
+            const endpointsOutput = `${{ steps.endpoints.outputs.endpoint_output }}`;
+            const comment = `## Build Validation\n\n### Build Results:\n\`\`\`\n${buildOutput}\`\`\`\n\n### Endpoint Validation:\n\`\`\`\n${endpointsOutput}\`\`\``;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
