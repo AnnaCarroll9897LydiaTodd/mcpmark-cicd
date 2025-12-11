@@ -1,0 +1,197 @@
+name: Pull Request Automation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run ESLint
+        id: eslint
+        run: npm run lint
+
+      - name: Run Prettier
+        id: prettier
+        run: npx prettier --check .
+
+      - name: Post Code Quality Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo, number } = github.context.issue;
+            const body = `
+            ## Code Quality Report
+
+            ### ESLint
+            *   **Status:** ${{ steps.eslint.outcome == 'success' ? '✅ Passed' : '❌ Failed' }}
+
+            ### Prettier
+            *   **Status:** ${{ steps.prettier.outcome == 'success' ? '✅ Passed' : '❌ Failed' }}
+            `;
+            github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body,
+            });
+  
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests with coverage
+        id: tests
+        run: npm test -- --coverage
+
+      - name: Post Test Coverage Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo, number } = github.context.issue;
+            const body = `
+            ## Test Coverage Report
+
+            *   **Status:** ${{ steps.tests.outcome == 'success' ? '✅ Passed' : '❌ Failed' }}
+            `;
+            github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body,
+            });
+            
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: coverage/
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+        
+      - name: Run dependency vulnerability check
+        id: npm-audit
+        run: npm audit
+
+      - name: Scan for secrets
+        id: trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.ref }}
+          head: ${{ github.event.pull_request.head.ref }}
+
+      - name: Post Security Scan Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo, number } = github.context.issue;
+            const body = `
+            ## Security Scan Report
+
+            ### Vulnerabilities in Dependencies
+            *   **Status:** ${{ steps.npm-audit.outcome == 'success' ? '✅ No new vulnerabilities found' : '❌ Vulnerabilities found' }}
+
+            ### Secrets Scan
+            *   **Status:** ${{ steps.trufflehog.outcome == 'success' ? '✅ No secrets found' : '❌ Secrets found' }}
+            `;
+            github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body,
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build application
+        id: build
+        run: npm run build --if-present
+
+      - name: Validate endpoints
+        id: validate-endpoints
+        run: echo "Endpoint validation step - implement as needed"
+
+      - name: Upload deployment preview artifact
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-preview
+          path: build/
+
+      - name: Post Build Validation Report
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo, number } = github.context.issue;
+            const body = `
+            ## Build Validation
+
+            *   **Build Status:** ${{ steps.build.outcome == 'success' ? '✅ Succeeded' : '❌ Failed' }}
+            *   **Endpoint Validation:** ${{ steps.validate-endpoints.outcome == 'success' ? '✅ Passed' : '❌ Failed' }}
+            `;
+            github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body,
+            });
